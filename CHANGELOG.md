@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2026-11-04
+
+### Changed
+- 7×7 Hard puzzles build about twice as fast (up to 0.26 s on a desktop,
+  now 0.15 s): the one-step trials no longer try the same links twice.
+  Same puzzles as before.
+- A "Generating puzzle…" progress bar shows when a puzzle takes more than a
+  moment. Needs game-common 1.12.0.
+
 ## [1.0.3] - 2026-11-03
 
 ### Changed

@@ -79,11 +79,12 @@ end
 -- Generation
 -- ---------------------------------------------------------------------------
 
-function SignpostBoard:generate(n, difficulty)
+-- on_progress (optional): called with a 0..1 fraction as it goes.
+function SignpostBoard:generate(n, difficulty, on_progress)
     self.n = n or self.n
     self.difficulty = difficulty or self.difficulty
     self:_reset()
-    local puz, info = Solver.generate(self.n, self.difficulty)
+    local puz, info = Solver.generate(self.n, self.difficulty, { on_progress = on_progress })
     self.gen_info = info
     for cell = 1, self.N do
         self.arrows[cell] = puz.arrows[cell] or 0
