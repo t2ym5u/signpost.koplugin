@@ -246,23 +246,34 @@ local function isValid(st, ctx)
     return k == ctx.N
 end
 
--- Tier 3: try each link of a cell with two or three choices.
+-- Tier 3: try each link of a cell with two or three choices: first every
+-- cell with two, then every cell with three. st doesn't change during the
+-- scan (each try works on a copy), so the candidate lists are worked out
+-- once, and the second round skips the two-choice cells the first round
+-- already tried in vain -- the old scan tried them all again, which was
+-- most of the time a 7x7 Hard grid took. Same links tried in the same
+-- order, so the same outcome.
 local function probe(st, ctx)
-    for maxc = 2, 3 do
+    local cands_of = {}
+    for a = 1, ctx.N do
+        if needsSucc(st, ctx, a) then
+            local cands = {}
+            for _, b in ipairs(ctx.ray[a]) do
+                if canLink(st, ctx, a, b, 2) then cands[#cands + 1] = b end
+            end
+            cands_of[a] = cands
+        end
+    end
+    for count = 2, 3 do
         for a = 1, ctx.N do
-            if needsSucc(st, ctx, a) then
-                local cands = {}
-                for _, b in ipairs(ctx.ray[a]) do
-                    if canLink(st, ctx, a, b, 2) then cands[#cands + 1] = b end
-                end
-                if #cands >= 2 and #cands <= maxc then
-                    for _, b in ipairs(cands) do
-                        local c = clone(st)
-                        link(c, a, b)
-                        if not propagate(c, ctx, 2) or (isComplete(c, ctx) and not isValid(c, ctx)) then
-                            st.forbid[a * 4096 + b] = true
-                            return true
-                        end
+            local cands = cands_of[a]
+            if cands and #cands == count then
+                for _, b in ipairs(cands) do
+                    local c = clone(st)
+                    link(c, a, b)
+                    if not propagate(c, ctx, 2) or (isComplete(c, ctx) and not isValid(c, ctx)) then
+                        st.forbid[a * 4096 + b] = true
+                        return true
                     end
                 end
             end
@@ -424,20 +435,28 @@ S.TIER = { easy = 1, medium = 2, hard = 3 }
 -- until the grid is solvable within the tier, take back the ones it can do
 -- without, and retry from a new path if the grid ends up easier than asked.
 -- 1 and N always stay. Every returned grid has passed countSolutions() == 1.
+-- opts.on_progress (optional): called with a 0..1 fraction as it goes.
 function S.generate(n, difficulty, opts)
     opts = opts or {}
+    local on_progress = opts.on_progress
     local target = S.TIER[difficulty] or 1
     -- A 4×4 grid seldom needs more than tier 1, but tries are cheap there.
     local max_attempts = opts.max_attempts or (n <= 4 and 80 or 15)
     local N = n * n
     local best, best_info
     for attempt = 1, max_attempts do
+        -- each attempt fills half of what is left of the bar
+        local function report(phase)
+            if on_progress then on_progress(1 - 0.5 ^ (attempt - 1) * (1 - 0.5 * phase)) end
+        end
+        report(0)
         local path = S.randomPath(n)
         local puz = S.puzzleFromPath(n, path)
         local solved, _, st = S.solve(puz, target)
         local guard = 0
         while not solved and guard < N do
             guard = guard + 1
+            report(0.5 * guard / N)
             local cands = {}
             for cell = 1, N do
                 if not puz.givens[cell] and (st.succ[cell] == 0 or st.pred[cell] == 0) then
@@ -456,7 +475,8 @@ function S.generate(n, difficulty, opts)
             end
             table.sort(cells)
             shuffle(cells)
-            for _, cell in ipairs(cells) do
+            for i, cell in ipairs(cells) do
+                report(0.5 + 0.5 * i / #cells)
                 local v = puz.givens[cell]
                 puz.givens[cell] = nil
                 if not S.solve(puz, target) then puz.givens[cell] = v end

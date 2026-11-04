@@ -26,6 +26,7 @@ local T               = require("ffi/util").template
 
 local ScreenBase        = lrequire_common("screen_base")
 local MenuHelper        = lrequire_common("menu_helper")
+local GenProgress       = lrequire_common("gen_progress")
 local SignpostBoard       = lrequire("board")
 local SignpostBoardWidget = lrequire("board_widget")
 
@@ -72,7 +73,7 @@ function SignpostScreen:init()
         difficulty = self.plugin:getSetting("difficulty", "easy"),
     }
     if not self.board:load(state) then
-        self.board:generate()
+        GenProgress.run(function(on_progress) self.board:generate(nil, nil, on_progress) end)
     end
     ScreenBase.init(self)
 end
@@ -179,7 +180,7 @@ function SignpostScreen:onNewGame()
     local n    = self.plugin:getSetting("grid_n", SignpostBoard.DEFAULT_N)
     local diff = self.plugin:getSetting("difficulty", "easy")
     self.board = SignpostBoard:new{ n = n, difficulty = diff }
-    self.board:generate()
+    GenProgress.run(function(on_progress) self.board:generate(nil, nil, on_progress) end)
     self.hint_cell = nil
     self.plugin:saveState(self.board:serialize())
     self:buildLayout()

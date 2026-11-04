@@ -101,6 +101,26 @@ describe("Signpost solver", function()
         end
     end)
 
+    -- 1.1.0: the tier-3 probe no longer re-tries two-choice cells in its
+    -- three-choice round (same outcome; 7x7 Hard took up to ~0.26 s on a
+    -- desktop). Keep a generous bound on it, and on the progress reports.
+    it("builds 7x7 Hard quickly, reporting progress from 0 to 1", function()
+        local worst = 0
+        for seed = 1, 4 do
+            math.randomseed(seed * 101)
+            local last, monotone = -1, true
+            local t0 = os.clock()
+            Solver.generate(7, "hard", { on_progress = function(f)
+                if f < last or f < 0 or f > 1 then monotone = false end
+                last = f
+            end })
+            worst = math.max(worst, os.clock() - t0)
+            assert.is_true(monotone)
+        end
+        -- generous: ~0.15 s on a desktop
+        assert.is_true(worst < 3.0, ("took %.2f s"):format(worst))
+    end)
+
     it("the deduction reproduces the stored answer (soundness)", function()
         for seed = 1, 20 do
             math.randomseed(seed)
