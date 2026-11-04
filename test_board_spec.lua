@@ -117,8 +117,39 @@ describe("Signpost solver", function()
             worst = math.max(worst, os.clock() - t0)
             assert.is_true(monotone)
         end
-        -- generous: ~0.15 s on a desktop
+        -- generous: ~0.08 s on a desktop
         assert.is_true(worst < 3.0, ("took %.2f s"):format(worst))
+    end)
+
+    -- 1.2.0: the generator gives numbers one at a time and carries on from
+    -- where the solver got stuck instead of solving the grid again (and
+    -- starts its removal checks from those saved states). That must end
+    -- exactly where a fresh solve of the same grid does.
+    it("carrying on after a new number matches solving from scratch", function()
+        local steps = 0
+        for seed = 1, 40 do
+            math.randomseed(seed * 977)
+            local n = 4 + seed % 4
+            local tier = seed % 3 + 1
+            local path = Solver.randomPath(n)
+            local puz = Solver.puzzleFromPath(n, path)
+            local cells = {}
+            for i = 2, n * n - 1 do cells[#cells + 1] = path[i] end
+            for i = #cells, 2, -1 do
+                local j = math.random(1, i)
+                cells[i], cells[j] = cells[j], cells[i]
+            end
+            local fresh = Solver.puzzleFromPath(n, path)
+            local inc = Solver._incremental(puz, tier, cells)
+            for i, res in ipairs(inc) do
+                fresh.givens[cells[i]] = fresh.number[cells[i]]
+                local ok, _, st = Solver.solve(fresh, tier)
+                assert.are.equal(ok, res.solved, ("seed %d step %d"):format(seed, i))
+                assert.are.same(st.succ, res.succ, ("seed %d step %d"):format(seed, i))
+                steps = steps + 1
+            end
+        end
+        assert.is_true(steps > 100)
     end)
 
     it("the deduction reproduces the stored answer (soundness)", function()

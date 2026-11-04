@@ -95,24 +95,39 @@ local function clone(st)
         o.tail[i], o.len[i], o.num[i] = st.tail[i], st.len[i], st.num[i]
     end
     for k, v in pairs(st.forbid) do o.forbid[k] = v end
+    o.occ, o.maxgap = st.occ, st.maxgap
     return o
 end
 
--- Which chain holds each number, for tier 2. Cached until the next link.
+-- How many numbers up to k chains hold (pre[k]), for tier 2, and the
+-- longest run of free numbers. Cached until the next link. Numbered chains
+-- never overlap (a link is only made if its numbers are free), so the count
+-- of held numbers in a range tells whether a chain other than the two being
+-- joined holds one of them -- a prefix sum instead of a scan of the range,
+-- which also keeps LuaJIT from tracing a tiny inner loop over and over.
 local function occupancy(st, ctx)
-    if st.occ then return st.occ, st.maxgap end
-    local occ = {}
-    for cell = 1, ctx.N do
-        if st.head[cell] == cell and st.num[cell] > 0 then
-            for k = st.num[cell], st.num[cell] + st.len[cell] - 1 do occ[k] = cell end
+    local pre = st.occ
+    if pre then return pre, st.maxgap end
+    local N = ctx.N
+    local held = {}
+    for cell = 1, N do
+        local v = st.num[cell]
+        if v > 0 and st.head[cell] == cell then
+            for k = v, v + st.len[cell] - 1 do held[k] = true end
         end
     end
-    local maxgap, run = 0, 0
-    for k = 1, ctx.N do
-        if occ[k] then run = 0 else run = run + 1; if run > maxgap then maxgap = run end end
+    pre = { [0] = 0 }
+    local maxgap, run, cnt = 0, 0, 0
+    for k = 1, N do
+        if held[k] then
+            cnt = cnt + 1; run = 0
+        else
+            run = run + 1; if run > maxgap then maxgap = run end
+        end
+        pre[k] = cnt
     end
-    st.occ, st.maxgap = occ, maxgap
-    return occ, maxgap
+    st.occ, st.maxgap = pre, maxgap
+    return pre, maxgap
 end
 
 -- Could a → b be part of the answer, as far as tier `tier` can tell?
@@ -140,12 +155,13 @@ local function canLink(st, ctx, a, b, tier)
         return false
     end
     if tier >= 2 then
-        local occ, maxgap = occupancy(st, ctx)
+        local pre, maxgap = occupancy(st, ctx)
         if h then
-            for k = h, h + L - 1 do
-                local owner = occ[k]
-                if owner and owner ~= ha and owner ~= b then return false end
-            end
+            -- numbers h .. h+L-1 held by some chain other than ha's and b's
+            local other = pre[h + L - 1] - pre[h - 1]
+            if na > 0 then other = other - la end
+            if nb > 0 then other = other - lb end
+            if other > 0 then return false end
         elseif L > maxgap then
             return false
         end
@@ -155,6 +171,7 @@ end
 
 local function link(st, a, b)
     local ha = st.head[a]
+    if (st.num[ha] > 0) ~= (st.num[b] > 0) then st.occ = nil end
     if st.num[ha] == 0 and st.num[b] > 0 then st.num[ha] = st.num[b] - st.len[ha] end
     st.succ[a], st.pred[b] = b, a
     local x = b
@@ -164,7 +181,6 @@ local function link(st, a, b)
     end
     st.tail[ha] = st.tail[b]
     st.len[ha] = st.len[ha] + st.len[b]
-    st.occ = nil
 end
 
 -- Does this cell still need a successor / a predecessor?
@@ -253,6 +269,11 @@ end
 -- already tried in vain -- the old scan tried them all again, which was
 -- most of the time a 7x7 Hard grid took. Same links tried in the same
 -- order, so the same outcome.
+--
+-- 1.2.0: each scan starts at the cell whose try last ran into a
+-- contradiction rather than at cell 1 (the cells before it were mostly
+-- tried in vain last time already). The order in which links are ruled
+-- out doesn't change where the deduction ends up, only how fast.
 local function probe(st, ctx)
     local cands_of = {}
     for a = 1, ctx.N do
@@ -264,8 +285,10 @@ local function probe(st, ctx)
             cands_of[a] = cands
         end
     end
+    local N, start = ctx.N, st.probe_from or 1
     for count = 2, 3 do
-        for a = 1, ctx.N do
+        for i = 0, N - 1 do
+            local a = (start + i - 1) % N + 1
             local cands = cands_of[a]
             if cands and #cands == count then
                 for _, b in ipairs(cands) do
@@ -273,6 +296,7 @@ local function probe(st, ctx)
                     link(c, a, b)
                     if not propagate(c, ctx, 2) or (isComplete(c, ctx) and not isValid(c, ctx)) then
                         st.forbid[a * 4096 + b] = true
+                        st.probe_from = a
                         return true
                     end
                 end
@@ -286,27 +310,72 @@ end
 -- Public solver API
 -- ---------------------------------------------------------------------------
 
--- Solves by deduction only, using tiers up to max_tier.
--- Returns solved (bool), the highest tier actually needed, and the state.
-function S.solve(puz, max_tier)
-    max_tier = max_tier or 3
-    local ctx = context(puz)
-    local st = initState(ctx)
-    local used = 1
+-- Runs the tiers from state st until the grid is done or stuck.
+-- Returns solved, the highest tier needed (at least `used`), and stuck:
+-- true when no rule applies any more (as opposed to a contradiction).
+local function run(st, ctx, max_tier, used)
     while true do
-        if not propagate(st, ctx, 1) then return false, used, st end
-        if isComplete(st, ctx) then return isValid(st, ctx), used, st end
+        if not propagate(st, ctx, 1) then return false, used, false end
+        if isComplete(st, ctx) then return isValid(st, ctx), used, false end
         local progressed = false
         if max_tier >= 2 then
             local ok, changed = pass(st, ctx, 2)
-            if not ok then return false, used, st end
+            if not ok then return false, used, false end
             if changed then progressed = true; if used < 2 then used = 2 end end
         end
         if not progressed and max_tier >= 3 then
             if probe(st, ctx) then progressed = true; used = 3 end
         end
-        if not progressed then return false, used, st end
+        if not progressed then return false, used, true end
     end
+end
+
+-- Solves by deduction only, using tiers up to max_tier.
+-- Returns solved (bool), the highest tier actually needed, the state, and
+-- whether it stopped stuck (rather than on a contradiction).
+function S.solve(puz, max_tier)
+    max_tier = max_tier or 3
+    local ctx = context(puz)
+    local st = initState(ctx)
+    local solved, used, stuck = run(st, ctx, max_tier, 1)
+    return solved, used, st, stuck
+end
+
+-- Gives one more number to a grid the solver got stuck on, and carries on
+-- from where it stopped instead of starting over. Every rule only ever
+-- adds links and rules links out, and a new number only removes options,
+-- so whatever was deduced before still holds: the solver reaches the same
+-- end state as a fresh solve() of the grid with the number added (checked
+-- against fresh solves in the generator spec). Givens are puz.givens,
+-- which the context shares, so the new number is part of the puzzle too.
+local function addGiven(st, ctx, cell, v)
+    ctx.givens[cell] = v
+    local h = st.head[cell]
+    if st.num[h] == 0 then
+        local k, x = 0, h
+        while x ~= cell do k = k + 1; x = st.succ[x] end
+        st.num[h] = v - k
+        st.occ = nil
+    end
+end
+
+-- For the specs: solves puz, then gives the numbers of `cells` one at a
+-- time the way the generator does, carrying on from the stuck state.
+-- Returns, after each step, whether it is solved and the links found.
+function S._incremental(puz, max_tier, cells)
+    local ctx = context(puz)
+    local st = initState(ctx)
+    local out = {}
+    local solved, _, stuck = run(st, ctx, max_tier, 1)
+    for i, cell in ipairs(cells) do
+        if solved or not stuck then break end
+        addGiven(st, ctx, cell, puz.number[cell])
+        solved, _, stuck = run(st, ctx, max_tier, 1)
+        local succ = {}
+        for x = 1, ctx.N do succ[x] = st.succ[x] end
+        out[i] = { solved = solved, succ = succ }
+    end
+    return out
 end
 
 -- Exhaustive count, stopping at `limit` (default 2).
@@ -376,6 +445,19 @@ function S.randomPath(n)
         end
         return list
     end
+    -- how many unvisited cells a queen move from cell reaches
+    local function countMoves(cell, visited)
+        local r, c = math.floor((cell - 1) / n) + 1, (cell - 1) % n + 1
+        local k = 0
+        for _, d in ipairs(S.DIRS) do
+            local rr, cc = r + d.dr, c + d.dc
+            while rr >= 1 and rr <= n and cc >= 1 and cc <= n do
+                if not visited[(rr - 1) * n + cc] then k = k + 1 end
+                rr, cc = rr + d.dr, cc + d.dc
+            end
+        end
+        return k
+    end
     for _ = 1, 100 do
         local visited, path = {}, {}
         local budget = 20 * N
@@ -389,7 +471,7 @@ function S.randomPath(n)
             local scored = {}
             for _, b in ipairs(cands) do
                 visited[b] = true
-                scored[#scored + 1] = { b = b, s = #moves(b, visited) + math.random() * 1.5 }
+                scored[#scored + 1] = { b = b, s = countMoves(b, visited) + math.random() * 1.5 }
                 visited[b] = nil
             end
             table.sort(scored, function(x, y) return x.s < y.s end)
@@ -452,7 +534,15 @@ function S.generate(n, difficulty, opts)
         report(0)
         local path = S.randomPath(n)
         local puz = S.puzzleFromPath(n, path)
-        local solved, _, st = S.solve(puz, target)
+        -- Each number added only narrows the grid, so the solver resumes
+        -- from its stuck state rather than solving the whole grid again.
+        local ctx = context(puz)
+        local st = initState(ctx)
+        local solved, _, stuck = run(st, ctx, target, 1)
+        -- snaps[j]: where the solver got stuck with the first j numbers
+        -- added (order[j] the j-th one), kept for the removal pass below
+        local snaps, order, added_at = {}, {}, {}
+        if stuck then snaps[0] = clone(st) end
         local guard = 0
         while not solved and guard < N do
             guard = guard + 1
@@ -465,8 +555,18 @@ function S.generate(n, difficulty, opts)
             end
             if #cands == 0 then break end
             local cell = cands[rand(1, #cands)]
-            puz.givens[cell] = puz.number[cell]
-            solved, _, st = S.solve(puz, target)
+            order[guard], added_at[cell] = cell, guard
+            if stuck then
+                addGiven(st, ctx, cell, puz.number[cell])
+                solved, _, stuck = run(st, ctx, target, 1)
+                if stuck and not solved and snaps[guard - 1] then snaps[guard] = clone(st) end
+            else
+                -- a contradiction (never seen: the rules are sound) leaves
+                -- st unusable, so solve afresh in that case
+                puz.givens[cell] = puz.number[cell]
+                solved, _, st, stuck = S.solve(puz, target)
+                ctx = context(puz)
+            end
         end
         if solved then
             local cells = {}
@@ -475,11 +575,27 @@ function S.generate(n, difficulty, opts)
             end
             table.sort(cells)
             shuffle(cells)
+            -- Taking a number out: the solver starts from where it got stuck
+            -- with the longest run of first-added numbers still all there
+            -- (saved above) and is handed the rest at once. Same outcome
+            -- as solving from scratch: numbers only narrow the grid.
             for i, cell in ipairs(cells) do
                 report(0.5 + 0.5 * i / #cells)
                 local v = puz.givens[cell]
                 puz.givens[cell] = nil
-                if not S.solve(puz, target) then puz.givens[cell] = v end
+                local j = 0
+                while snaps[j + 1] and puz.givens[order[j + 1]] do j = j + 1 end
+                local ok
+                if snaps[j] then
+                    local t = clone(snaps[j])
+                    for c2, w in pairs(puz.givens) do
+                        if (added_at[c2] or 0) > j then addGiven(t, ctx, c2, w) end
+                    end
+                    ok = run(t, ctx, target, 1)
+                else
+                    ok = S.solve(puz, target)
+                end
+                if not ok then puz.givens[cell] = v end
             end
             local _, tier = S.solve(puz, target)
             if S.countSolutions(puz, 2) == 1 then

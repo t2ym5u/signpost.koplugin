@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-11-04
+
+### Changed
+- 7×7 Hard puzzles build two to four times faster: from up to about 0.2 s
+  on a desktop (about 5 s on a Kobo) to under 0.1 s (about 2 s on a
+  Kobo); 6×6 Hard from 0.1 s to under 0.04 s. When the builder adds a
+  number to a grid it can't finish yet, the solver carries on from where
+  it stopped instead of starting over, and checking which numbers can be
+  taken back starts from those saved steps too. Same puzzles as before.
+- Uses less memory: the game loads when you open it, not when KOReader
+  starts, so it no longer takes memory or startup time while unplayed.
+
 ## [1.1.0] - 2026-11-04
 
 ### Changed
