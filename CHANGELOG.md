@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-11-05
+
+### Changed
+- Hard no longer needs trial and error. It used to need one-step "what
+  if" trials (assume a link, see it break), which is guessing. Hard now
+  uses the same two kinds of reasoning as Medium, only much more of the
+  number bookkeeping: on 100 grids per size, 3.4 such steps on average at
+  5×5 (Medium: 1), 6.1 at 6×6 (Medium: 2.1), 10.6 at 7×7 (Medium: 5.5).
+  Medium now has a ceiling on those steps, so the two levels no longer
+  overlap. On 4×4 grids two such steps are rare, so 4×4 Hard is often
+  like Medium.
+- 7×7 Hard builds about twice as fast: under 0.05 s on a desktop (about
+  1 s on a Kobo) at worst, from 0.09 s. 7×7 Medium, which now has to find
+  a grid under its ceiling, can take as long (from 0.02 s); the progress
+  bar shows meanwhile.
+- Medium and Hard grids differ from those of earlier versions, so the
+  Daily Challenge puzzle changes once for those levels.
+
 ## [1.2.1] - 2026-11-04
 
 ### Fixed

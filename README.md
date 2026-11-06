@@ -22,7 +22,9 @@ a few others, on a grey background.
     successor or predecessor;
   - *Medium* — also needs number bookkeeping: a chain cannot take numbers
     another chain already holds, nor be longer than any free gap;
-  - *Hard* — also needs one-step "what if" trials.
+  - *Hard* — the same two kinds of reasoning as Medium, but many more
+    bookkeeping steps (Medium has a ceiling on them). No level ever needs
+    trial and error.
 - **Unique solution, always** — solved by deduction at generation, and
   counted exhaustively before it is shown.
 - **Chain labels** like the original: chains holding a given number show
@@ -52,8 +54,9 @@ distance, is refused.
 A random Hamiltonian path over queen moves (depth-first, Warnsdorff order)
 gives the arrows. Numbers are added where the solver gets stuck, then removed
 again while the grid stays solvable within the difficulty's tier; 1 and the
-last number always stay. Worst case over 50 seeds at 7×7 Hard on a desktop:
-about 0.45 s (LuaJIT).
+last number always stay. Medium and Hard then keep a path only if the grid
+needs the right number of bookkeeping steps. Worst case over 100 seeds at
+7×7 Hard on a desktop: about 0.05 s (LuaJIT).
 
 ## License
 

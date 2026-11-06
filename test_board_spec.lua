@@ -101,12 +101,78 @@ describe("Signpost solver", function()
         end
     end)
 
-    -- 1.1.0: the tier-3 probe no longer re-tries two-choice cells in its
-    -- three-choice round (same outcome; 7x7 Hard took up to ~0.26 s on a
-    -- desktop). Keep a generous bound on it, and on the progress reports.
+    -- 1.3.0: Hard used to need one-step trials ("assume a link, see it
+    -- break"), which is guessing. No level may need more than tier 2 now.
+    it("no level needs trial and error (30 seeds per size and level)", function()
+        for _, n in ipairs({ 4, 5, 6, 7 }) do
+            for _, diff in ipairs({ "easy", "medium", "hard" }) do
+                for seed = 1, 30 do
+                    math.randomseed(seed * 7919 + n)
+                    local puz, info = Solver.generate(n, diff)
+                    assert.is_true(info.tier <= 2)
+                    local ok, _, st = Solver.solve(puz, 2)
+                    assert.is_true(ok, ("%dx%d %s seed %d"):format(n, n, diff, seed))
+                    assert.are.equal(info.t2, st.t2)
+                end
+            end
+        end
+    end)
+
+    -- 1.3.0: Hard is tier 2 like Medium but with clearly more tier-2 steps.
+    it("Easy < Medium < Hard in tier-2 steps, every size", function()
+        for _, n in ipairs({ 5, 6, 7 }) do
+            local sum, fit = { easy = 0, medium = 0, hard = 0 }, { medium = 0, hard = 0 }
+            local hard_min, med_max = math.huge, 0
+            local K = 20
+            for seed = 1, K do
+                for _, diff in ipairs({ "easy", "medium", "hard" }) do
+                    math.randomseed(seed * 31 + n)
+                    local _, info = Solver.generate(n, diff)
+                    sum[diff] = sum[diff] + info.t2
+                    if fit[diff] and info.miss == 0 then fit[diff] = fit[diff] + 1 end
+                    if diff == "hard" then hard_min = math.min(hard_min, info.t2) end
+                    if diff == "medium" then med_max = math.max(med_max, info.t2) end
+                end
+            end
+            assert.are.equal(0, sum.easy)
+            assert.is_true(sum.medium >= K, n .. ": medium needs tier 2")
+            -- Hard averages at least one and a half times Medium's tier-2 steps
+            assert.is_true(2 * sum.hard >= 3 * sum.medium, ("%d: %d vs %d"):format(n, sum.hard, sum.medium))
+            -- nearly every grid lands in its level's window
+            assert.is_true(fit.hard >= K - 2 and fit.medium >= K - 2, n .. ": windows")
+            assert.is_true(hard_min >= med_max - 1, n .. ": overlap")
+        end
+        -- 4x4: two tier-2 steps are rare on so small a grid; Hard still
+        -- never needs fewer than Medium.
+        local s = { medium = 0, hard = 0 }
+        for seed = 1, 20 do
+            for _, diff in ipairs({ "medium", "hard" }) do
+                math.randomseed(seed * 31 + 4)
+                local _, info = Solver.generate(4, diff)
+                s[diff] = s[diff] + info.t2
+            end
+        end
+        assert.is_true(s.hard >= s.medium)
+    end)
+
+    it("same seed, same puzzle (the Daily Challenge relies on it)", function()
+        for _, n in ipairs({ 5, 7 }) do
+            for _, diff in ipairs({ "easy", "medium", "hard" }) do
+                math.randomseed(1234 + n)
+                local a = Solver.generate(n, diff)
+                math.randomseed(1234 + n)
+                local b = Solver.generate(n, diff)
+                assert.are.same(a.path, b.path)
+                assert.are.same(a.givens, b.givens)
+            end
+        end
+    end)
+
+    -- 1.3.0: no trial tier any more; Hard picks paths by tier-2 steps.
+    -- Generous bound (worst about 45 ms on a desktop at 7x7, 100 seeds).
     it("builds 7x7 Hard quickly, reporting progress from 0 to 1", function()
         local worst = 0
-        for seed = 1, 4 do
+        for seed = 1, 10 do
             math.randomseed(seed * 101)
             local last, monotone = -1, true
             local t0 = os.clock()
@@ -117,8 +183,7 @@ describe("Signpost solver", function()
             worst = math.max(worst, os.clock() - t0)
             assert.is_true(monotone)
         end
-        -- generous: ~0.08 s on a desktop
-        assert.is_true(worst < 3.0, ("took %.2f s"):format(worst))
+        assert.is_true(worst < 1.0, ("took %.2f s"):format(worst))
     end)
 
     -- 1.2.0: the generator gives numbers one at a time and carries on from
@@ -130,7 +195,7 @@ describe("Signpost solver", function()
         for seed = 1, 40 do
             math.randomseed(seed * 977)
             local n = 4 + seed % 4
-            local tier = seed % 3 + 1
+            local tier = seed % 2 + 1
             local path = Solver.randomPath(n)
             local puz = Solver.puzzleFromPath(n, path)
             local cells = {}
@@ -157,7 +222,7 @@ describe("Signpost solver", function()
             math.randomseed(seed)
             local n = 4 + seed % 4
             local puz = Solver.generate(n, ({ "easy", "medium", "hard" })[seed % 3 + 1])
-            local ok, _, st = Solver.solve(puz, 3)
+            local ok, _, st = Solver.solve(puz, 2)
             assert.is_true(ok)
             for i = 1, n * n - 1 do
                 assert.are.equal(puz.path[i + 1], st.succ[puz.path[i]])
@@ -300,6 +365,32 @@ describe("SignpostBoard", function()
         assert.is_true(b.timer:isRunning())
         assert.is_false(Board:new():load(nil))
         assert.is_false(Board:new():load({ n = 4 }))
+    end)
+
+    -- 1.3.0 changed how Hard grids are built; a game saved by 1.2.x (here
+    -- a hand-made Hard-style grid with only 1 and N given, mid-game, with
+    -- a difficulty of "hard") must still load, take hints and be won.
+    it("loads a game saved by 1.2.x and plays it to the end", function()
+        math.randomseed(77)
+        local path = Solver.randomPath(6)
+        local puz = Solver.puzzleFromPath(6, path)
+        local givens, sol = {}, {}
+        for cell = 1, 36 do givens[cell] = puz.givens[cell] or 0; sol[cell] = 0 end
+        for i = 1, 35 do sol[path[i]] = path[i + 1] end
+        local succ = {}
+        for cell = 1, 36 do succ[cell] = 0 end
+        succ[path[1]] = path[2]
+        local data = {
+            n = 6, difficulty = "hard", arrows = puz.arrows, givens = givens,
+            number = puz.number, sol_succ = sol, succ = succ, solved = false,
+            hints_used = 2, timer = { elapsed = 12, was_running = true }, undo = {},
+        }
+        local b = Board:new()
+        assert.is_true(b:load(data))
+        assert.are.equal("hard", b.difficulty)
+        assert.are.equal(path[2], b.succ[path[1]])
+        for i = 2, 35 do assert.is_true((b:linkCells(path[i], path[i + 1]))) end
+        assert.is_true(b:checkWin())
     end)
 end)
 
