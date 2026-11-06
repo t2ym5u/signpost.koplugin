@@ -17,9 +17,12 @@
 --   tier 2  numbers are a resource: a link is also impossible when the
 --           numbers the joined chain would take are already held by another
 --           chain, or when an unnumbered chain would be too long for any gap
---           still free between the numbers already placed;
---   tier 3  one-step trial: assume a link for a cell with few choices, push
---           tiers 1-2, and rule it out if that runs into a contradiction.
+--           still free between the numbers already placed.
+--
+-- There is no trial tier: no level ever needs "assume a link and see if it
+-- breaks" (1.3.0; before, Hard needed exactly that). Hard is tier 2 like
+-- Medium, but with many more tier-2 steps: each one is a link that tier 1
+-- alone could not find at that point (see run()).
 --
 -- Every rule is sound, so a grid the solver finishes has exactly one
 -- solution. The generator checks that independently with countSolutions().
@@ -95,7 +98,7 @@ local function clone(st)
         o.tail[i], o.len[i], o.num[i] = st.tail[i], st.len[i], st.num[i]
     end
     for k, v in pairs(st.forbid) do o.forbid[k] = v end
-    o.occ, o.maxgap = st.occ, st.maxgap
+    o.occ, o.maxgap, o.t2 = st.occ, st.maxgap, st.t2
     return o
 end
 
@@ -195,7 +198,8 @@ end
 
 -- One sweep of the single-successor / single-predecessor rules.
 -- Returns ok, changed.
-local function pass(st, ctx, tier)
+-- first_only: stop at the first link (tier-2 steps are counted one by one).
+local function pass(st, ctx, tier, first_only)
     local changed = false
     for a = 1, ctx.N do
         if needsSucc(st, ctx, a) then
@@ -207,7 +211,10 @@ local function pass(st, ctx, tier)
                 end
             end
             if count == 0 then return false, changed end
-            if count == 1 then link(st, a, only); changed = true end
+            if count == 1 then
+                link(st, a, only); changed = true
+                if first_only then return true, true end
+            end
         end
     end
     for b = 1, ctx.N do
@@ -220,7 +227,10 @@ local function pass(st, ctx, tier)
                 end
             end
             if count == 0 then return false, changed end
-            if count == 1 then link(st, only, b); changed = true end
+            if count == 1 then
+                link(st, only, b); changed = true
+                if first_only then return true, true end
+            end
         end
     end
     return true, changed
@@ -262,50 +272,6 @@ local function isValid(st, ctx)
     return k == ctx.N
 end
 
--- Tier 3: try each link of a cell with two or three choices: first every
--- cell with two, then every cell with three. st doesn't change during the
--- scan (each try works on a copy), so the candidate lists are worked out
--- once, and the second round skips the two-choice cells the first round
--- already tried in vain -- the old scan tried them all again, which was
--- most of the time a 7x7 Hard grid took. Same links tried in the same
--- order, so the same outcome.
---
--- 1.2.0: each scan starts at the cell whose try last ran into a
--- contradiction rather than at cell 1 (the cells before it were mostly
--- tried in vain last time already). The order in which links are ruled
--- out doesn't change where the deduction ends up, only how fast.
-local function probe(st, ctx)
-    local cands_of = {}
-    for a = 1, ctx.N do
-        if needsSucc(st, ctx, a) then
-            local cands = {}
-            for _, b in ipairs(ctx.ray[a]) do
-                if canLink(st, ctx, a, b, 2) then cands[#cands + 1] = b end
-            end
-            cands_of[a] = cands
-        end
-    end
-    local N, start = ctx.N, st.probe_from or 1
-    for count = 2, 3 do
-        for i = 0, N - 1 do
-            local a = (start + i - 1) % N + 1
-            local cands = cands_of[a]
-            if cands and #cands == count then
-                for _, b in ipairs(cands) do
-                    local c = clone(st)
-                    link(c, a, b)
-                    if not propagate(c, ctx, 2) or (isComplete(c, ctx) and not isValid(c, ctx)) then
-                        st.forbid[a * 4096 + b] = true
-                        st.probe_from = a
-                        return true
-                    end
-                end
-            end
-        end
-    end
-    return false
-end
-
 -- ---------------------------------------------------------------------------
 -- Public solver API
 -- ---------------------------------------------------------------------------
@@ -313,28 +279,34 @@ end
 -- Runs the tiers from state st until the grid is done or stuck.
 -- Returns solved, the highest tier needed (at least `used`), and stuck:
 -- true when no rule applies any more (as opposed to a contradiction).
+-- st.t2 counts the tier-2 steps: tier 2 makes one link at a time, then
+-- tier 1 runs dry again, so each step is a link tier 1 could not find.
+-- The links found are the same whatever the order (every rule is sound
+-- and only narrows the grid), only the count is new.
 local function run(st, ctx, max_tier, used)
+    st.t2 = st.t2 or 0
     while true do
         if not propagate(st, ctx, 1) then return false, used, false end
         if isComplete(st, ctx) then return isValid(st, ctx), used, false end
         local progressed = false
         if max_tier >= 2 then
-            local ok, changed = pass(st, ctx, 2)
+            local ok, changed = pass(st, ctx, 2, true)
             if not ok then return false, used, false end
-            if changed then progressed = true; if used < 2 then used = 2 end end
-        end
-        if not progressed and max_tier >= 3 then
-            if probe(st, ctx) then progressed = true; used = 3 end
+            if changed then
+                progressed = true; st.t2 = st.t2 + 1
+                if used < 2 then used = 2 end
+            end
         end
         if not progressed then return false, used, true end
     end
 end
 
--- Solves by deduction only, using tiers up to max_tier.
--- Returns solved (bool), the highest tier actually needed, the state, and
--- whether it stopped stuck (rather than on a contradiction).
+-- Solves by deduction only, using tiers up to max_tier (at most 2).
+-- Returns solved (bool), the highest tier actually needed, the state (its
+-- t2 field: how many tier-2 steps), and whether it stopped stuck (rather
+-- than on a contradiction).
 function S.solve(puz, max_tier)
-    max_tier = max_tier or 3
+    max_tier = max_tier or 2
     local ctx = context(puz)
     local st = initState(ctx)
     local solved, used, stuck = run(st, ctx, max_tier, 1)
@@ -508,10 +480,43 @@ function S.puzzleFromPath(n, path)
     }
 end
 
-S.TIER = { easy = 1, medium = 2, hard = 3 }
+S.TIER = { easy = 1, medium = 2, hard = 2 }
 
--- Builds a puzzle needing exactly the difficulty's tier where it can.
--- Returns the puzzle and an info table { tier, givens, attempts }.
+-- What each level asks for (1.3.0):
+--   tier            the highest solver tier the grid needs
+--   min_t2, max_t2  how many tier-2 steps it needs (see run())
+--   attempts        how many paths to try for that; past it, the grid
+--                   closest to the window found so far is used
+-- Hard used to need one-step trials (a third tier), which is guessing. It
+-- is now tier 2 like Medium, with clearly more tier-2 steps; Medium gets a
+-- ceiling so the two never overlap. A 4x4 grid seldom needs tier 2 at all
+-- (two tier-2 steps: about 1 path in 100), so its tries are many but
+-- cheap, and Hard there is the best of them when none gets to two. The attempt counts keep the slowest
+-- grid around 40 ms on a desktop (about 1 s on a Kobo).
+local MED_MAX   = { [4] = 1, [5] = 1, [6] = 3, [7] = 7 }
+local MED_TRIES = { [4] = 80, [5] = 15, [6] = 10, [7] = 6 }
+local HARD_MIN  = { [4] = 2, [5] = 3, [6] = 5, [7] = 9 }
+local HARD_TRIES = { [4] = 70, [5] = 22, [6] = 10, [7] = 6 }
+S.LEVELS = {
+    easy   = function(n) return { tier = 1, min_t2 = 0, max_t2 = 0,
+                                  attempts = n <= 4 and 80 or 15 } end,
+    medium = function(n) return { tier = 2, min_t2 = 1, max_t2 = MED_MAX[n] or 7,
+                                  attempts = MED_TRIES[n] or 6 } end,
+    hard   = function(n) return { tier = 2, min_t2 = HARD_MIN[n] or 9, max_t2 = math.huge,
+                                  attempts = HARD_TRIES[n] or 6 } end,
+}
+
+-- How far a solved grid is from what the level asks for (0 = fits).
+local function miss(level, tier, t2)
+    if tier ~= level.tier then return 1000 + math.abs(tier - level.tier) end
+    if t2 < level.min_t2 then return level.min_t2 - t2 end
+    if t2 > level.max_t2 then return t2 - level.max_t2 end
+    return 0
+end
+
+-- Builds a puzzle that fits the difficulty's level (S.LEVELS) where it can.
+-- Returns the puzzle and an info table { tier, t2, givens, attempts, miss }
+-- (miss > 0: no try fitted, this is the closest one).
 --
 -- Same scheme as Train Tracks: add numbers the stuck solver could not place
 -- until the grid is solvable within the tier, take back the ones it can do
@@ -521,9 +526,11 @@ S.TIER = { easy = 1, medium = 2, hard = 3 }
 function S.generate(n, difficulty, opts)
     opts = opts or {}
     local on_progress = opts.on_progress
-    local target = S.TIER[difficulty] or 1
-    -- A 4×4 grid seldom needs more than tier 1, but tries are cheap there.
-    local max_attempts = opts.max_attempts or (n <= 4 and 80 or 15)
+    local level = (S.LEVELS[difficulty] or S.LEVELS.easy)(n)
+    if opts.min_t2 then level.min_t2 = opts.min_t2 end
+    if opts.max_t2 then level.max_t2 = opts.max_t2 end
+    local target = level.tier
+    local max_attempts = opts.max_attempts or level.attempts
     local N = n * n
     local best, best_info
     for attempt = 1, max_attempts do
@@ -597,13 +604,16 @@ function S.generate(n, difficulty, opts)
                 end
                 if not ok then puz.givens[cell] = v end
             end
-            local _, tier = S.solve(puz, target)
-            if S.countSolutions(puz, 2) == 1 then
+            local _, tier, fst = S.solve(puz, target)
+            local t2 = fst.t2
+            -- the level is checked first: countSolutions is the dear part
+            local m = miss(level, tier, t2)
+            if (not best or m < best_info.miss) and S.countSolutions(puz, 2) == 1 then
                 local k = 0
                 for _ in pairs(puz.givens) do k = k + 1 end
-                local info = { tier = tier, givens = k, attempts = attempt }
-                if tier == target then return puz, info end
-                if not best or tier > best_info.tier then best, best_info = puz, info end
+                local info = { tier = tier, t2 = t2, givens = k, attempts = attempt, miss = m }
+                if m == 0 then return puz, info end
+                best, best_info = puz, info
             end
         end
     end
@@ -612,7 +622,7 @@ function S.generate(n, difficulty, opts)
     local path = S.randomPath(n)
     local puz = S.puzzleFromPath(n, path)
     for i, cell in ipairs(path) do puz.givens[cell] = i end
-    return puz, { tier = 1, givens = N, attempts = max_attempts }
+    return puz, { tier = 1, t2 = 0, givens = N, attempts = max_attempts, miss = 0 }
 end
 
 return S
